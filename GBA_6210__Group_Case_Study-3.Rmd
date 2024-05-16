@@ -1,0 +1,304 @@
+---
+title: "GBA 6210 Group Case Study"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(caret)
+library(ggplot2)
+library(class)
+library(FNN)
+
+# Load the data
+df <- read.csv("/Users/ngocnguyen/Desktop/CPP/GBA 6210 - Data Mining/Data Mining Textbook Datasets/CharlesBookClub.csv", header = TRUE)
+```
+
+```{r, echo=FALSE}
+# Basic summary of the data set
+print(summary(df))
+```
+
+```{r, echo=FALSE}
+ggplot(df, aes(x = M)) + 
+  geom_histogram(binwidth = 50, fill = "#69b3a2", color = "black") + 
+  ggtitle("Distribution of Monetary Value (M)") +
+  theme_minimal()
+```
+
+```{r, echo=FALSE}
+ggplot(df, aes(x = R)) + 
+  geom_histogram(binwidth = 5, fill = "#ff9999", color = "black") + 
+  ggtitle("Distribution of Recency (R)") +
+  theme_minimal()
+```
+
+```{r, echo=FALSE}
+ggplot(df, aes(x = F)) + 
+  geom_histogram(binwidth = 1, fill = "#ccccff", color = "black") + 
+  ggtitle("Distribution of Frequency (F)") +
+  theme_minimal()
+```
+
+```{r, echo=FALSE}
+#Correlation plot among RFM variables
+print("Correlation among RFM variables:")
+cor_plot_data <- df %>% select(R, F, M)
+cor_matrix <- cor(cor_plot_data)
+print(cor_matrix)
+```
+Partition of data set into a training set (60%) and a validation set (40%). 
+```{r, echo=FALSE}
+# Set Seed
+set.seed(1)
+
+# Split data into training and validation sets
+trainIndex <- createDataPartition(df$Yes_Florence, p = .60, list = FALSE, times = 1)
+trainData <- df[trainIndex, ]
+validationData <- df[-trainIndex, ]
+```
+Q1 What is the response rate for the training data customers taken as a whole? What is the response rate for each of the 4X5X3 = 60 combinations of RFM categories? Which combinations have response rate in the training data above the overall response in the training data?
+```{r}
+# Calculate the overall response rate in the training data
+overall_response_rate_training <- mean(trainData$Yes_Florence)
+cat("Overall response rate in training data:", overall_response_rate_training, "\n\n")
+
+# Group the training data by RFM categories and calculate the response rate for each group
+response_rates_by_rfm <- trainData %>%
+  group_by(Rcode, Fcode, Mcode) %>%
+  summarise(ResponseRate = mean(Yes_Florence), .groups = 'drop')
+
+# Display response rates for each RFM category combination
+print("Response rates for each of the 4x5x3 = 60 combinations of RFM categories:")
+print(response_rates_by_rfm)
+```
+Note that there are only 51 combinations that are used in this dataset. The other response rates would be 0.
+
+```{r}
+# Identify which combinations have a response rate above the overall response rate in the training data
+high_response_combinations <- response_rates_by_rfm %>%
+  filter(ResponseRate > overall_response_rate_training)
+
+# Output the overall response rate
+print(paste("Overall response rate in training data:", overall_response_rate_training))
+
+# Output the response rates by RFM category
+print("Response rates by RFM category:")
+print(response_rates_by_rfm)
+
+# Output the combinations with high response rates
+print("Combinations with higher response rates than overall:")
+print(high_response_combinations)
+```
+**Q2)** Suppose that we decide to send promotional mail only to the “above-average” RFM combinations identified in part 1.
+Compute the response rate in validation data using these combinations.
+
+```{r}
+# Identify "above-average" RFM combinations from the training data
+above_average_combinations <- response_rates_by_rfm %>%
+  filter(ResponseRate > overall_response_rate_training) %>%
+  select(Rcode, Fcode, Mcode)
+
+# Filter validation data to include only the "above-average" RFM combinations
+validation_above_average <- validationData %>%
+  semi_join(above_average_combinations, by = c("Rcode", "Fcode", "Mcode"))
+
+# Calculate the response rate among the filtered validation data
+above_average_response_rate <- mean(validation_above_average$Yes_Florence)
+print(above_average_combinations)
+# Print the response rate
+print(paste("Response rate for 'above-average' RFM combinations in validation data:", above_average_response_rate))
+```
+**Q3)** Rework parts 1 and 2 with three segments:
+Segment 1: RFM combinations that have response rates that exceed twice the overall response rate
+Segment 2: RFM combinations that exceed the overall response rate but do not exceed twice the overall response rate.
+Segment 3: RFM of the remaining RFM combinations
+
+Draw the lift curve showing the number of customers in the validation dataset on the x-axis and cumulative number of buyers in the validation dataset on the y-axis. The lift curve consists of three points for the previous three segments.
+
+```{r}
+# Calculate the overall response rate in the training data
+overall_response_rate_training <- mean(trainData$Yes_Florence)
+
+# Group the training data by RFM categories and calculate the response rate for each group
+response_rates_by_rfm <- trainData %>%
+  group_by(Rcode, Fcode, Mcode) %>%
+  summarise(ResponseRate = mean(Yes_Florence), .groups = 'drop') %>%
+  mutate(Segment = case_when(
+    ResponseRate > 2 * overall_response_rate_training ~ "Segment 1: >2x Overall",
+    ResponseRate > overall_response_rate_training ~ "Segment 2: >1x and <=2x Overall",
+    TRUE ~ "Segment 3: <=1x Overall"
+  ))
+
+# Join segments with validation data
+validation_segmented <- validationData %>%
+  left_join(response_rates_by_rfm, by = c("Rcode", "Fcode", "Mcode"))
+
+# Calculate the response rate for each segment in the validation data
+segment_response_rates <- validation_segmented %>%
+  group_by(Segment) %>%
+  summarise(Customers = n(), Buyers = sum(Yes_Florence), ResponseRate = mean(Yes_Florence), .groups = 'drop') %>%
+  arrange(desc(ResponseRate))
+
+# Calculate cumulative buyers and customers
+segment_response_rates <- segment_response_rates %>%
+  mutate(CumulativeBuyers = cumsum(Buyers),
+         CumulativeCustomers = cumsum(Customers))
+
+# Draw the lift curve
+ggplot(segment_response_rates, aes(x = CumulativeCustomers, y = CumulativeBuyers)) +
+  geom_point() +
+  geom_line() +
+  ggtitle("Lift Curve") +
+  xlab("Number of Customers") +
+  ylab("Cumulative Number of Buyers") +
+  theme_minimal()
+
+# Output the summary table for review
+print(segment_response_rates)
+```
+**Q4)** Use the k-nearest-neighbor approach to classify cases with k = 1, 2, ..., 11, using Florence as the outcome variable. Based on the validation set, find the best k. Remember to normalize all five variables. Create a lift curve for the best k model, and report the expected lift for an equal number of customers from the validation dataset.
+```{r}
+set.seed(1)  # For reproducibility
+
+# Normalize the variables
+df_normalized <- as.data.frame(scale(df[, c(4,5,6,7,19)]))
+
+# Add the outcome variable back to the dataset
+df_normalized$Florence <- df$Florence
+
+
+# Prepare the training and validation datasets from normalized data
+trainIndex <- createDataPartition(df_normalized$Florence, p = 0.6, list = FALSE)
+trainData <- df_normalized[trainIndex, ]
+validationData <- df_normalized[-trainIndex, ]
+
+# Function to perform k-NN and return accuracy
+accuracy_per_k <- function(k) {
+  predicted_labels <- knn(train = trainData[, -6], test = validationData[, -6], cl = trainData$Florence, k = k)
+  mean(predicted_labels == validationData$Florence)
+}
+
+
+# Test k values from 1 to 11
+k_values <- 1:11
+accuracies <- sapply(k_values, accuracy_per_k)
+best_k <- k_values[which.max(accuracies)]
+accuracies
+
+cat("Best k:", best_k, "with accuracy:", max(accuracies))
+```
+```{r}
+# Combine k values and their corresponding accuracies into a data frame
+results_df <- data.frame(
+  k = k_values,
+  accuracy = accuracies
+)
+
+# Print the results as a data frame
+print(results_df)
+
+# Create a data frame for plotting
+accuracy_data <- data.frame(k = k_values, accuracy = accuracies)
+
+# Plot the accuracy for different k values
+ggplot(accuracy_data, aes(x = k, y = accuracy)) +
+  geom_line() +  # Line to connect the points
+  geom_point() +  # Points at each k value
+  labs(title = "Accuracy for KNN", x = "k", y = "Accuracy") +
+  theme_minimal() +  # Minimalist theme
+  scale_x_continuous(breaks = seq(2, max(k_values), by = 2)) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+# Step 1: Predict using the best k
+best_k_predictions <- knn(train = trainData[, -6], test = validationData[, -6], cl = trainData$Florence, k = best_k)
+
+# Step 2: Convert predictions to a numerical binary format for scoring
+validationData$score <- as.numeric(best_k_predictions == "1")
+validationData$actual <- as.numeric(validationData$Florence == "1")
+
+# Step 3: Order data by score in descending order
+validationData <- validationData[order(validationData$score, decreasing = TRUE),]
+
+# Step 4: Calculate cumulative response
+validationData$cumulative_buyers <- cumsum(validationData$actual)
+
+# Calculate the baseline (random guessing)
+total_buyers <- sum(validationData$actual)
+total_customers <- nrow(validationData)
+baseline <- cumsum(rep(total_buyers/total_customers, total_customers))
+
+# Step 5: Plot the lift curve
+df_lift <- data.frame(
+  Customers = 1:total_customers,
+  CumulativeBuyersModel = validationData$cumulative_buyers,
+  Baseline = baseline
+)
+
+lift_plot <- ggplot(df_lift, aes(x = Customers)) +
+  geom_line(aes(y = CumulativeBuyersModel), color = "blue") +
+  geom_line(aes(y = Baseline), color = "red") +
+  labs(title = "Lift Curve", x = "Number of Customers", y = "Cumulative Number of Buyers") +
+  theme_minimal() +
+  annotate("text", x = total_customers * 0.75, y = total_buyers, label = "Model", color = "blue") +
+  annotate("text", x = total_customers * 0.75, y = total_buyers / 2, label = "Baseline", color = "red")
+
+print(lift_plot)
+
+# Step 6: Calculate expected lift
+expected_lift <- validationData$cumulative_buyers[total_customers] / baseline[total_customers]
+cat("Expected lift for an equal number of customers:", expected_lift, "\n")
+
+```
+**Q5)** The k-NN prediction algorithm gives a numerical value, which is a weighted average of the values of the Florence variable for the k-nearest neighbors with weights that are inversely proportional to distance. Using the best k that you calculated above with k-NN classification, now run a model with k-NN prediction and compute a lift curve for the validation data. Use all 5 predictors and normalized data. What is the range within which a prediction will fall? How does this result compare to the output you get with the k-nearest-neighbor classification?
+
+```{r}
+# Define the column names of the predictors explicitly
+predictor_columns <- names(trainData)[names(trainData) != "Florence"]  # Assuming 'Florence' is the column to predict
+
+# Prepare the predictors datasets by selecting the same columns explicitly
+train_predictors <- trainData[, predictor_columns]
+validation_predictors <- validationData[, predictor_columns]
+
+# Check if the number of columns matches
+if (ncol(train_predictors) != ncol(validation_predictors)) {
+  stop("The number of columns in the training and validation datasets do not match.")
+} else {
+  message("The number of columns match. Proceeding with k-NN regression.")
+}
+
+# Predict using k-NN regression with automatic distance weighting
+knn_predictions_weighted <- knn.reg(train = train_predictors, test = validation_predictors, y = trainData$Florence, k = best_k)
+
+# Store the predicted values
+validationData$weighted_scores <- knn_predictions_weighted$pred
+
+
+
+# Calculate the overall response rate
+overall_rate <- mean(validationData$Florence == 1)
+
+# Cumulative Lift Chart
+validationData <- validationData %>%
+  arrange(desc(weighted_scores)) %>%
+  mutate(
+    cumulative_positives = cumsum(Florence),
+    total_positives = sum(Florence),
+    percentage_cumulative_positives = 100 * cumulative_positives / total_positives,
+    expected_percentage = 100 * seq_along(Florence) / n()
+  )
+
+# Create the Cumulative Lift Chart with a centered title
+cumulative_lift_plot <- ggplot(validationData, aes(x = seq_along(Florence))) +
+  geom_line(aes(y = percentage_cumulative_positives), color = "blue") +
+  geom_line(aes(y = expected_percentage), linetype = "dashed", color = "red") +
+  labs(title = "Cumulative Lift Chart", x = "# Observations", y = "The Number of 1's (%)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))  # Centering the title
+
+print(cumulative_lift_plot)
+```
